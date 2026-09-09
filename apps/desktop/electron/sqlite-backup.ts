@@ -6,6 +6,7 @@ const DEFAULT_BACKUP_DEADLINE_MS = 30_000
 const DEFAULT_VERIFICATION_DEADLINE_MS = 30_000
 const DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 * 1024 * 1024 * 1024
 const BACKUP_RATE_PAGES = 100
+const BACKUP_WORKER_WATCHDOG_GRACE_MS = 1_000
 
 const BACKUP_WORKER_SOURCE = `
   const { parentPort, workerData } = require('node:worker_threads')
@@ -16,7 +17,15 @@ const BACKUP_WORKER_SOURCE = `
       source = new DatabaseSync(workerData.sourcePath)
       source.exec('PRAGMA busy_timeout = 1000')
       source.prepare('SELECT count(*) FROM sqlite_master').get()
-      await backup(source, workerData.partialPath, { rate: workerData.rate })
+      const startedAt = Date.now()
+      await backup(source, workerData.partialPath, {
+        rate: workerData.rate,
+        progress: () => {
+          if (Date.now() - startedAt >= workerData.deadlineMs) {
+            throw new Error('SQLite emergency backup exceeded ' + workerData.deadlineMs + 'ms deadline')
+          }
+        }
+      })
       parentPort.postMessage({ ok: true })
     } catch (error) {
       parentPort.postMessage({ error: error instanceof Error ? error.message : String(error), ok: false })
@@ -132,8 +141,8 @@ export async function createVerifiedSqliteBackup(
   try {
     await runBoundedWorker(
       BACKUP_WORKER_SOURCE,
-      { partialPath, rate: BACKUP_RATE_PAGES, sourcePath },
-      deadlineMs,
+      { deadlineMs, partialPath, rate: BACKUP_RATE_PAGES, sourcePath },
+      deadlineMs + BACKUP_WORKER_WATCHDOG_GRACE_MS,
       'SQLite emergency backup'
     )
     options.onPhase?.('backup-complete')

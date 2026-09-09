@@ -182,7 +182,7 @@ test('reaches a bounded outcome while another connection continuously writes', a
   } finally {
     await writer.terminate()
   }
-})
+}, 10_000)
 
 test('removes a partial when the backup operation rejects', async () => {
   const dir = tempDir()
